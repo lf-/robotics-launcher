@@ -28,6 +28,8 @@ const int CMD_COMP = 0x03;
 
 const int COMP_CMD_MOVE = 0x01;
 const int COMP_CMD_START = 0x02;
+const int COMP_CMD_LAUNCH = 0x03;
+const int COMP_CMD_SABER_TEST = 0x04;
 
 #define SYNC 0
 
@@ -42,9 +44,26 @@ struct CompState {
   uint8_t data_pos;
 };
 
-const struct Instruction insts[] = {
-  {1874, 1861},
-  {194, 181}
+struct Instruction instsL[] = {
+{-95, 96},
+{671, 672},
+{-446, 451},
+{1336, 1340},
+{538, -539},
+{2690, 2685},
+{-405, 403},
+{171, 179},
+{-96, 95},
+{1542, 1546},
+{-513, 556},
+{-1153, -1150},
+{505, -507},
+{-1380, -1374},
+{-755, 752}
+};
+
+struct Instruction instsR[] = {
+  
 };
 struct CompState compstate;
 
@@ -53,6 +72,8 @@ SoftwareSerial md49(MD49_RX, MD49_TX);
 SoftwareSerial sabertooth(SABER_UNUSED, SABER_TX);
 
 uint8_t mode = 0;
+boolean doneMove = false;
+boolean lowered = false;
 
 void md49_move(int32_t *desired_encs) {
   /*Serial.println("md49_move");
@@ -98,6 +119,29 @@ void md49_move(int32_t *desired_encs) {
   md49_reset_encoders();
 }
 
+void launch() {
+  delay(1000);
+  Serial.println("back");
+  saber_set_speed(128, 2, -100);
+  delay(3658);
+  saber_set_speed(128, 2, 0);
+  Serial.println("load");
+  //saber_set_speed(128, 1, -20);
+  delay(645);
+  //saber_set_speed(128, 1, 0);
+  delay(1000);
+  // trigger launch
+  Serial.println("trigger");
+  saber_set_speed(128, 2, -100);
+  delay(668);
+  saber_set_speed(128, 2, 0);
+  delay(1000);
+  Serial.println("start");
+  saber_set_speed(128, 2, 100);
+  delay(3820);
+  saber_set_speed(128, 2, 0);
+}
+
 void md49_wait_byte() {
   // block until byte available
   while (!md49.available()) {
@@ -108,6 +152,38 @@ void md49_wait_byte() {
 void comp_wait_byte() {
   // block until byte available
   while (!Serial.available()) {
+  }
+}
+
+void saber_call(uint8_t addr, uint8_t cmd, uint8_t data) {
+  Serial.print("SABER: ");
+  Serial.print(addr, HEX);
+  Serial.print(" ");
+  Serial.print(cmd, HEX);
+  Serial.print(" ");
+  Serial.print(data, HEX);
+  Serial.print(" ");
+  Serial.println((addr + cmd + data) & 127, HEX);
+  sabertooth.write(addr);
+  sabertooth.write(cmd);
+  sabertooth.write(data);
+  // checksum
+  sabertooth.write((addr + cmd + data) & 127);
+}
+
+void saber_set_speed(uint8_t addr, uint8_t motor, int8_t speed) {
+  if (motor == 1) {
+    if (speed < 0) {
+      saber_call(addr, 0x01, -speed);
+    } else if (speed >= 0) {
+      saber_call(addr, 0x00, speed);
+    }
+  } else if (motor == 2) {
+    if (speed < 0) {
+      saber_call(addr, 0x05, -speed);
+    } else if (speed >= 0) {
+      saber_call(addr, 0x04, speed);
+    }
   }
 }
 
@@ -202,13 +278,24 @@ void md49_set_mode(byte mode) {
 }
 
 void start_move() {
-  uint8_t moves = sizeof (insts) / sizeof (Instruction);
+  struct Instruction *insts;
+  uint8_t moves;
+  if (digitalRead(3) == 0) {
+    Serial.println("left");
+    insts = instsL;
+    moves = sizeof (instsL) / sizeof (Instruction);
+  } else {
+    Serial.println("right");
+    insts = instsR;
+    moves = sizeof (instsR) / sizeof (Instruction);
+  }
   int32_t encs[2];
   for (uint8_t i = 0; i < moves; ++i) {
     struct Instruction inst = insts[i];
     encs[0] = inst.enc1;
     encs[1] = inst.enc2;
-    Serial.println(inst.enc1, inst.enc2);
+    Serial.println(inst.enc1);
+    Serial.println(inst.enc2);
     md49_move(encs);
     delay(500);
   }
@@ -240,8 +327,20 @@ void comp_cmd(byte input) {
     compstate.cmd = 0;
     compstate.data_pos = 0;
     return;
+  case COMP_CMD_SABER_TEST:
+    int8_t speed;
+    speed = input;
+    saber_set_speed(128, 2, speed);
+    compstate.cmd = 0;
+    compstate.data_pos = 0;
+    return;
   case COMP_CMD_START:
     start_move();
+    compstate.cmd = 0;
+    compstate.data_pos = 0;
+    return;
+  case COMP_CMD_LAUNCH:
+    launch();
     compstate.cmd = 0;
     compstate.data_pos = 0;
     return;
@@ -249,6 +348,14 @@ void comp_cmd(byte input) {
 }
 
 void cmd_loop() {
+  /*if (digitalRead(2) == 1 && !doneMove) {
+    delay(5000);
+    start_move();
+    doneMove = true;
+  }*/
+  if (digitalRead(7) == 0) {
+    launch();
+  }
   if (md49.available() > 0) {
     Serial.write(md49.read());
   }
@@ -275,7 +382,10 @@ void cmd_loop() {
 void setup() {
   compstate.cmd = 0;
   compstate.data_pos = 0;
-  
+
+  pinMode(3, INPUT_PULLUP);
+  pinMode(2, INPUT_PULLUP);
+  pinMode(7, INPUT_PULLUP);
   Serial.begin(9600);
   while (!Serial);
   sabertooth.begin(9600);
@@ -286,6 +396,7 @@ void setup() {
   md49_reset_encoders();
   md49_set_mode(MODE_SIMPLE_SIGNED);
   md49_disable_timeout();
+
   //Serial.println("INIT DONE");
 }
 
